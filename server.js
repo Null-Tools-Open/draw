@@ -3,7 +3,7 @@ import { WebSocketServer } from 'ws'
 import compression from 'compression'
 import dotenv from 'dotenv'
 import { initValkey, saveSnapshot, getSnapshot } from './lib/valkey.js'
-import { getOrCreateRoom, getRoom, getRoomCount, startCleanupTimer, closeAllRooms } from './lib/rooms.js'
+import { getOrCreateRoom, getRoom, deleteRoom, getRoomCount, startCleanupTimer, closeAllRooms } from './lib/rooms.js'
 import { sendDiscordMessage } from './lib/discord.js'
 
 dotenv.config()
@@ -13,7 +13,6 @@ const VALKEY_URL = process.env.VALKEY_URL || 'redis://localhost:6379'
 const DRAW_INTERNAL_KEY = process.env.DRAW_INTERNAL_KEY
 const ROOM_CLEANUP_MS = parseInt(process.env.ROOM_CLEANUP_MS) || 600000
 const MAX_ROOMS = parseInt(process.env.MAX_ROOMS) || 100
-const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS) || 30000
 
 if (!DRAW_INTERNAL_KEY) {
     console.error('ERROR: DRAW_INTERNAL_KEY is required')
@@ -92,7 +91,7 @@ wss.on('connection', (ws, req) => {
             }
             lastMessageTime = now
 
-            if (message.type === 'join') {
+            if (message.type === 'create') {
                 const { roomId, clientId } = message
 
                 if (clientId) ws.clientId = clientId
@@ -107,20 +106,54 @@ wss.on('connection', (ws, req) => {
                     return
                 }
 
-                if (getRoomCount() >= MAX_ROOMS && !getRoom(roomId)) {
+                if (getRoomCount() >= MAX_ROOMS) {
                     ws.send(JSON.stringify({ type: 'error', message: 'Server at capacity' }))
                     return
                 }
 
-                if (!getRoom(roomId)) {
-                    sendDiscordMessage({
-                        title: '🏠 New Room Created',
-                        description: `Room ID: \`${roomId}\``,
-                        color: 3447003
-                    })
+                if (getRoom(roomId)) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Room already exists' }))
+                    return
                 }
 
+                sendDiscordMessage({
+                    title: '🏠 New Room Created',
+                    description: `Room ID: \`${roomId}\``,
+                    color: 3447003
+                })
+
                 currentRoom = getOrCreateRoom(roomId)
+                currentRoom.addClient(ws)
+
+                ws.send(JSON.stringify({
+                    type: 'joined',
+                    roomId,
+                    clients: currentRoom.getClientCount(),
+                    isHost: true
+                }))
+
+            } else if (message.type === 'join') {
+                const { roomId, clientId } = message
+
+                if (clientId) ws.clientId = clientId
+
+                if (!roomId || typeof roomId !== 'string') {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Invalid roomId' }))
+                    return
+                }
+
+                if (!/^[a-zA-Z0-9-]+$/.test(roomId)) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Invalid roomId format' }))
+                    return
+                }
+
+                const existingRoom = getRoom(roomId)
+                if (!existingRoom) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }))
+                    return
+                }
+
+                currentRoom = existingRoom
                 currentRoom.addClient(ws)
 
                 const snapshot = await getSnapshot(roomId)
