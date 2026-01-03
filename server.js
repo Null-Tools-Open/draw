@@ -3,7 +3,8 @@ import { WebSocketServer } from 'ws'
 import compression from 'compression'
 import dotenv from 'dotenv'
 import { initValkey, saveSnapshot, getSnapshot } from './lib/valkey.js'
-import { getOrCreateRoom, getRoom, deleteRoom, getRoomCount, startCleanupTimer } from './lib/rooms.js'
+import { getOrCreateRoom, getRoom, getRoomCount, startCleanupTimer, closeAllRooms } from './lib/rooms.js'
+import { sendDiscordMessage } from './lib/discord.js'
 
 dotenv.config()
 
@@ -92,16 +93,31 @@ wss.on('connection', (ws, req) => {
             lastMessageTime = now
 
             if (message.type === 'join') {
-                const { roomId } = message
+                const { roomId, clientId } = message
+
+                if (clientId) ws.clientId = clientId
 
                 if (!roomId || typeof roomId !== 'string') {
                     ws.send(JSON.stringify({ type: 'error', message: 'Invalid roomId' }))
                     return
                 }
 
+                if (!/^[a-zA-Z0-9-]+$/.test(roomId)) {
+                    ws.send(JSON.stringify({ type: 'error', message: 'Invalid roomId format' }))
+                    return
+                }
+
                 if (getRoomCount() >= MAX_ROOMS && !getRoom(roomId)) {
                     ws.send(JSON.stringify({ type: 'error', message: 'Server at capacity' }))
                     return
+                }
+
+                if (!getRoom(roomId)) {
+                    sendDiscordMessage({
+                        title: '🏠 New Room Created',
+                        description: `Room ID: \`${roomId}\``,
+                        color: 3447003
+                    })
                 }
 
                 currentRoom = getOrCreateRoom(roomId)
@@ -119,7 +135,8 @@ wss.on('connection', (ws, req) => {
                 ws.send(JSON.stringify({
                     type: 'joined',
                     roomId,
-                    clients: currentRoom.getClientCount()
+                    clients: currentRoom.getClientCount(),
+                    isHost: currentRoom.isHost(ws)
                 }))
 
                 currentRoom.broadcast(JSON.stringify({
@@ -130,6 +147,11 @@ wss.on('connection', (ws, req) => {
             } else if (message.type === 'update') {
 
                 if (currentRoom) {
+
+                    if (message.clientId) {
+                        ws.clientId = message.clientId
+                    }
+
                     currentRoom.broadcast(JSON.stringify({
                         type: 'update',
                         data: message.data
@@ -139,10 +161,27 @@ wss.on('connection', (ws, req) => {
             } else if (message.type === 'awareness') {
 
                 if (currentRoom) {
+
+                    if (message.clientId) {
+                        ws.clientId = message.clientId
+                    }
+
                     currentRoom.broadcast(JSON.stringify({
                         type: 'awareness',
                         data: message.data
                     }), ws)
+                }
+
+            } else if (message.type === 'close_room') {
+
+                if (currentRoom) {
+                    sendDiscordMessage({
+                        title: '🛑 Room Closed by Host',
+                        description: `Room ID: \`${currentRoom.id}\`\nClients connected: ${currentRoom.getClientCount()}`,
+                        color: 15548997
+                    })
+                    currentRoom.closeRoom()
+                    currentRoom = null
                 }
 
             } else if (message.type === 'snapshot') {
@@ -167,6 +206,7 @@ wss.on('connection', (ws, req) => {
             } else {
                 currentRoom.broadcast(JSON.stringify({
                     type: 'peer-left',
+                    clientId: ws.clientId,
                     clients: currentRoom.getClientCount()
                 }))
             }
@@ -178,13 +218,25 @@ wss.on('connection', (ws, req) => {
     })
 })
 
-process.on('SIGTERM', () => {
-    console.log('[DRAW:MAIN] SIGTERM received, closing...')
-    wss.close(() => {
-        server.close(() => {
-            process.exit(0)
-        })
+const gracefulShutdown = (signal) => {
+    console.log(`[DRAW:MAIN] ${signal} received, closing...`)
+    sendDiscordMessage({
+        title: `⛔ ${signal} Received`,
+        description: 'Server is shutting down...',
+        color: 15105570
     })
-})
+
+    closeAllRooms()
+    setTimeout(() => {
+        wss.close(() => {
+            server.close(() => {
+                process.exit(0)
+            })
+        })
+    }, 100)
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
 console.log('[DRAW:MAIN] WebSocket ready')
