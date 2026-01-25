@@ -13,9 +13,11 @@ const VALKEY_URL = process.env.VALKEY_URL || 'redis://localhost:6379'
 const DRAW_INTERNAL_KEY = process.env.DRAW_INTERNAL_KEY
 const ROOM_CLEANUP_MS = parseInt(process.env.ROOM_CLEANUP_MS) || 600000
 const MAX_ROOMS = parseInt(process.env.MAX_ROOMS) || 100
+const SNAPSHOT_INTERVAL_MS = parseInt(process.env.SNAPSHOT_INTERVAL_MS) || 30000
 
 const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 1000
 const RATE_LIMIT_MAX_MESSAGES = parseInt(process.env.RATE_LIMIT_MAX_MESSAGES) || 100
+const RATE_LIMIT_BURST_THRESHOLD = parseInt(process.env.RATE_LIMIT_BURST_THRESHOLD) || 50
 
 class SlidingWindowRateLimiter {
     constructor(windowMs, maxRequests) {
@@ -243,6 +245,15 @@ wss.on('connection', (ws, req) => {
                         data: data,
                         settings: settings
                     }))
+                } else {
+
+                    if (currentRoom.hostWs && currentRoom.hostWs.readyState === 1) {
+
+                        currentRoom.hostWs.send(JSON.stringify({
+                            type: 'request_snapshot',
+                            forClient: ws.clientId || 'guest'
+                        }))
+                    }
                 }
 
                 ws.send(JSON.stringify({
