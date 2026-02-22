@@ -83,12 +83,12 @@ const server = app.listen(PORT, () => {
 
 const wss = new WebSocketServer({
     server,
-    maxPayload: 1024 * 1024
+    maxPayload: 10 * 1024 * 1024
 })
 
 startCleanupTimer(60000, ROOM_CLEANUP_MS)
 
-const MAX_BROADCAST_DATA_SIZE = 512 * 1024
+const MAX_BROADCAST_DATA_SIZE = 10 * 1024 * 1024 // 10MB limit
 
 function validateBroadcastData(data) {
 
@@ -126,13 +126,13 @@ wss.on('connection', (ws, req) => {
             if (!isAuthenticated) {
 
                 if (message.type !== 'auth') {
-
+                    console.log('[WS] Rejecting - type is not auth:', message.type)
                     ws.close(4001, 'Authentication required')
-
                     return
                 }
 
                 if (message.key !== DRAW_INTERNAL_KEY) {
+                    console.log(`[WS] Rejecting - Invalid key. Received: ${message.key}, Expected: ${DRAW_INTERNAL_KEY}`)
                     ws.close(4003, 'Invalid key')
                     return
                 }
@@ -341,6 +341,46 @@ wss.on('connection', (ws, req) => {
 
                     currentRoom.broadcast(JSON.stringify({
                         type: 'awareness',
+                        data: message.data
+                    }), ws)
+                }
+
+            } else if (message.type === 'chat') {
+
+                if (currentRoom) {
+                    if (message.clientId) {
+                        ws.clientId = message.clientId
+                    }
+
+                    const validation = validateBroadcastData(message.data)
+
+                    if (!validation.valid) {
+                        ws.send(JSON.stringify({ type: 'error', message: validation.reason }))
+                        return
+                    }
+
+                    currentRoom.broadcast(JSON.stringify({
+                        type: 'chat',
+                        data: message.data
+                    }), ws)
+                }
+
+            } else if (message.type === 'chat_delete') {
+
+                if (currentRoom) {
+                    if (message.clientId) {
+                        ws.clientId = message.clientId
+                    }
+
+                    const validation = validateBroadcastData(message.data)
+
+                    if (!validation.valid) {
+                        ws.send(JSON.stringify({ type: 'error', message: validation.reason }))
+                        return
+                    }
+
+                    currentRoom.broadcast(JSON.stringify({
+                        type: 'chat_delete',
                         data: message.data
                     }), ws)
                 }
